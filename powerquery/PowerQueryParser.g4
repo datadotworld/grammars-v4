@@ -4,6 +4,8 @@ options {
 }
 document: section_document | expression_document;
 section_document: section;
+
+required_field_with_space_selector: IDENTIFIER_WITH_SPACE;
 section:
 	literal_attribs? SECTION section_name SEMICOLON section_members?;
 section_name: IDENTIFIER;
@@ -12,63 +14,32 @@ section_member:
 	literal_attribs? SHARED? section_member_name EQUALS expression SEMICOLON;
 section_member_name: IDENTIFIER;
 
+// Note for the left recursion in this file: antlr is ok with direct left recursion and apparently converts it to non-recursive,
+// but not ok with indirect left recursion, and right recursion may be a performance issue sometimes
 expression_document: expression;
 expression:
-	logical_or_expression
+	arithmetic_expression
 	| each_expression
 	| function_expression
 	| let_expression
 	| if_expression
-	| let_expression
 	| error_raising_expression
 	| error_handling_expression;
 
-logical_or_expression:
-	logical_and_expression
-	| logical_and_expression OR logical_or_expression;
-logical_and_expression:
-	is_expression
-	| logical_and_expression AND is_expression;
-
-is_expression:
-	as_expression
-	| is_expression IS nullable_primitive_type;
 nullable_primitive_type: NULLABLE? primitive_type;
 
-as_expression:
-	equality_expression
-	| as_expression AS nullable_primitive_type;
+// combining these because we don't care about evaluating the individual expressions for our purposes
+arithmetic_expression:
+	base_expression
+	| arithmetic_expression (IS | AS) nullable_primitive_type
+	| arithmetic_expression (OR | AND | EQUALS | NEQ | LE | GE | LEQ | GEQ | PLUS | MINUS | SLASH | STAR | AMP | META) base_expression
+	;
 
-equality_expression:
-	relational_expression
-	| relational_expression EQUALS equality_expression
-	| relational_expression NEQ equality_expression;
-
-relational_expression:
-	additive_expression
-	| additive_expression LE relational_expression
-	| additive_expression GE relational_expression
-	| additive_expression LEQ additive_expression
-	| additive_expression GEQ relational_expression;
-
-additive_expression:
-	multiplicative_expression
-	| multiplicative_expression PLUS additive_expression
-	| multiplicative_expression MINUS additive_expression
-	| multiplicative_expression AMP additive_expression;
-multiplicative_expression:
-	metadata_expression
-	| metadata_expression STAR multiplicative_expression
-	| metadata_expression SLASH multiplicative_expression;
-
-metadata_expression:
-	unary_expression
-	| unary_expression META unary_expression;
-unary_expression:
-	type_expression
-	| PLUS unary_expression
-	| MINUS unary_expression
-	| NOT unary_expression;
+base_expression:
+    primary_expression
+	| type_expression
+	| (PLUS | MINUS | NOT) base_expression
+	;
 
 primary_expression:
 	literal_expression
@@ -77,90 +48,71 @@ primary_expression:
 	| identifier_expression
 	| section_access_expression
 	| parenthesized_expression
-	| primary_expression field_selector
 	| implicit_target_field_selection
-	| primary_expression required_projection
-	| primary_expression optional_projection //projection
-	| implicit_target_projection //field_access_expression
-	| primary_expression OPEN_BRACE item_selector CLOSE_BRACE
-	| primary_expression OPEN_BRACE item_selector CLOSE_BRACE OPTIONAL //item access expression 
-	| primary_expression OPEN_PAREN argument_list? CLOSE_PAREN //invoke_expression 
+	| projection //field_access_expression
+	| primary_expression (field_selector | projection | (OPEN_BRACE expression CLOSE_BRACE OPTIONAL?) | (OPEN_PAREN argument_list? CLOSE_PAREN) ) // projection, item_access_expression, invoke_expression
+	| inner_function
 	| not_implemented_expression;
+
 literal_expression: LITERAL;
 identifier_expression: identifier_reference;
-identifier_reference:
-	exclusive_identifier_reference
-	| inclusive_identifier_reference;
-exclusive_identifier_reference: IDENTIFIER;
-inclusive_identifier_reference: AT IDENTIFIER;
+identifier_reference: AT? IDENTIFIER;
 
 section_access_expression: IDENTIFIER BANG IDENTIFIER;
 
 parenthesized_expression: OPEN_PAREN expression CLOSE_PAREN;
 not_implemented_expression: ELLIPSES;
-argument_list: expression | expression COMMA argument_list;
+argument_list: expression (COMMA expression)*?;
 list_expression: OPEN_BRACE item_list? CLOSE_BRACE;
-item_list: item | item COMMA item_list;
-item: expression | expression DOTDOT expression;
+item_list: item (COMMA item)*?;
+item: expression ( DOTDOT expression)*?;
 
 record_expression: OPEN_BRACKET field_list? CLOSE_BRACKET;
-field_list: field | field COMMA field_list;
+field_list: field (COMMA field)*?;
 field: field_name EQUALS expression;
 field_name: IDENTIFIER;
 item_selector: expression;
 
 field_selector:
-	required_field_selector
-	| optional_field_selector;
+	required_field_selector OPTIONAL?
+	| required_field_with_space_selector;
 required_field_selector: OPEN_BRACKET field_name CLOSE_BRACKET;
-optional_field_selector:
-	OPEN_BRACKET field_name CLOSE_BRACKET OPTIONAL;
 implicit_target_field_selection: field_selector;
-required_projection:
-	OPEN_BRACKET required_selector_list CLOSE_BRACKET;
-optional_projection:
-	OPEN_BRACKET required_selector_list CLOSE_BRACKET OPTIONAL;
+projection:
+	OPEN_BRACKET required_selector_list CLOSE_BRACKET OPTIONAL?;
+
 required_selector_list:
-	required_field_selector
-	| required_field_selector COMMA required_selector_list;
-implicit_target_projection:
-	required_projection
-	| optional_projection;
+	required_field_selector (COMMA required_field_selector)*?;
 
 function_expression:
 	OPEN_PAREN parameter_list? CLOSE_PAREN return_type? '=>' function_body;
 function_body: expression;
+// initial grammar doesn't handle examples like #duration here: "if [#"days difference "] >= #duration(0, 0, 0, 0) then ..."
+inner_function:
+    ESCAPE_ESCAPE primitive_type OPEN_PAREN literal_item_list CLOSE_PAREN ;
+
 parameter_list:
-	fixed_parameter_list
-	| fixed_parameter_list COMMA optional_parameter_list;
+	fixed_parameter_list (COMMA optional_parameter_list)*?;
 fixed_parameter_list:
-	parameter
-	| parameter COMMA fixed_parameter_list;
+	parameter (COMMA parameter)*?;
 parameter: parameter_name parameter_type?;
 parameter_name: IDENTIFIER;
 parameter_type: assertion;
 return_type: assertion;
 assertion: AS nullable_primitive_type;
 optional_parameter_list:
-	optional_parameter
-	| optional_parameter COMMA optional_parameter_list;
+	optional_parameter (COMMA optional_parameter)*?;
 optional_parameter: OPTIONAL_TEXT parameter;
 
 each_expression: EACH each_expression_body;
 each_expression_body: function_body;
 
-let_expression: LET variable_list IN expression;
-variable_list: variable | variable COMMA variable_list;
-variable: variable_name EQUALS expression;
-variable_name: IDENTIFIER;
+let_expression: LET field_list IN expression;
 
 if_expression:
-	IF if_condition THEN true_expression ELSE false_expression;
-if_condition: expression;
-true_expression: expression;
-false_expression: expression;
+	IF expression THEN expression ELSE expression;
 
-type_expression: primary_expression | TYPE primary_type;
+type_expression: TYPE primary_type;
 type_expr: parenthesized_expression | primary_type;
 primary_type:
 	primitive_type
@@ -192,8 +144,7 @@ record_type:
 	| OPEN_BRACKET field_specification_list? CLOSE_BRACKET
 	| OPEN_BRACKET field_specification_list COMMA open_record_marker CLOSE_BRACKET;
 field_specification_list:
-	field_specification
-	| field_specification COMMA field_specification_list;
+	field_specification (COMMA field_specification)*?;
 field_specification:
 	OPTIONAL_TEXT? field_name field_type_specification?;
 field_type_specification: EQUALS field_type;
@@ -231,11 +182,9 @@ default_expression: expression;
 literal_attribs: record_literal;
 record_literal: OPEN_BRACKET literal_field_list? CLOSE_BRACKET;
 literal_field_list:
-	literal_field
-	| literal_field COMMA literal_field_list;
+	literal_field (COMMA literal_field)*?;
 literal_field: field_name EQUALS any_literal;
 list_literal: OPEN_BRACE literal_item_list? CLOSE_BRACE;
 literal_item_list:
-	any_literal
-	| any_literal COMMA literal_item_list;
+	any_literal (COMMA any_literal)*?;
 any_literal: record_literal | list_literal | LITERAL;
